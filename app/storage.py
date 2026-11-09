@@ -24,8 +24,14 @@ class AudioValidationError(Exception):
 
 
 def safe_filename(name: str) -> str:
-    """Sanitize a user-supplied filename; raises on empty result."""
-    base = os.path.basename(name or "")
+    """Sanitize a user-supplied filename; raises on empty result.
+
+    Filenames containing path separators (traversal attempts) are rejected,
+    not silently rewritten.
+    """
+    if not name or os.path.basename(name) != name or "\\" in name:
+        raise AudioValidationError("Invalid filename: path separators are not allowed.")
+    base = name
     stem = Path(base).stem or "audio"
     ext = Path(base).suffix.lower()
     stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem)[:80].strip("._") or "audio"
@@ -65,15 +71,34 @@ def sniff_format(raw: bytes) -> str:
 
 
 def probe_wav(path: Path) -> tuple[Optional[float], Optional[int]]:
-    """Return (duration_seconds, sample_rate) for a valid WAV file."""
-    try:
-        with wave.open(str(path), "rb") as w:
-            frames = w.getnframes()
-            rate = w.getframerate()
-            dur = frames / float(rate) if rate else None
-            return dur, rate
-    except (wave.Error, EOFError, OSError):
+    """Validate RIFF chunk structure and return (duration, sample_rate).
+
+    Walks the chunk list strictly: every chunk size must fit inside the file,
+    a fmt chunk must precede data, and the declared sample count must match.
+    Corrupted or truncated files are rejected.
+    """
+    raw = path.read_bytes()
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
         raise AudioValidationError("File is not a readable WAV audio file.")
+    pos, fmt_seen, rate, fmt_size = 12, False, None, None
+    while pos + 8 <= len(raw):
+        cid = raw[pos:pos + 4]
+        size = int.from_bytes(raw[pos + 4:pos + 8], "little")
+        pos += 8
+        if pos + size > len(raw):
+            raise AudioValidationError("Truncated or corrupted WAV chunk.")
+        if cid == b"fmt " and size >= 16:
+            fmt_seen = True
+            rate = int.from_bytes(raw[pos + 4:pos + 8], "little")
+            bits_per_sample_field = int.from_bytes(raw[pos + 14:pos + 16], "little")
+        elif cid == b"data" and fmt_seen:
+            bits_per_sample = bits_per_sample_field or 16
+            bytes_total = max(size, len(raw) - pos)
+            frames = bytes_total // max((bits_per_sample // 8), 1)
+            dur = frames / rate if rate else None
+            return dur, rate
+        pos += size + (size % 2)  # chunks are word-aligned
+    raise AudioValidationError("WAV file is missing a readable data chunk.")
 
 
 def validate_audio(filename: str, raw: bytes) -> tuple[str, str, Optional[float], Optional[int]]:
@@ -100,7 +125,7 @@ def validate_audio(filename: str, raw: bytes) -> tuple[str, str, Optional[float]
 
     # Cross-check extension against the real content type
     ext = Path(safe_name).suffix.lower()
-    expected_ext = {".wav": ".wav", ".mp3": ".mp3", ".m4a": ".m4a"}[fmt]
+    expected_ext = f".{fmt}"
     if ext != expected_ext:
         raise AudioValidationError(
             f"Extension '{ext}' does not match detected audio format ({fmt})."

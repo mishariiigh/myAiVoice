@@ -16,8 +16,8 @@ from app.providers.base import (  # noqa: E402
     NotConfiguredError,
     NotImplementedYetError,
     Provider,
-    ProviderRegistry,
 )
+from app.providers.registry import ProviderRegistry  # noqa: E402
 from app.providers.elevenlabs import ElevenLabsProvider  # noqa: E402
 from app.providers.local import LocalVoiceProvider  # noqa: E402
 
@@ -104,7 +104,7 @@ def test_corrupt_and_invalid_audio_rejected(temp_env):
     # truncated/corrupt WAV: correct header, broken body
     raw = make_wav_bytes()
     corrupt = bytearray(raw)
-    corrupt[44:48] = b"XXXX"  # clobber fmt chunk size/data
+    corrupt[40:44] = (1 << 30).to_bytes(4, "little")  # bogus data-chunk size
     with pytest.raises(storage.AudioValidationError):
         storage.validate_audio("corrupt.wav", bytes(corrupt))
     # empty file
@@ -189,7 +189,7 @@ def test_elevenlabs_missing_credentials_status(temp_env, monkeypatch):
 
 
 def test_elevenlabs_configured_but_not_generating(temp_env, monkeypatch):
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key-123")
+    monkeypatch.setattr(config, "ELEVENLABS_API_KEY", "test-key-123")
     caps = ElevenLabsProvider().get_capabilities()
     assert caps.configured is True
     assert caps.generation_ready is False
@@ -234,7 +234,11 @@ def test_delete_outside_data_dir_refused(temp_env, tmp_path_factory):
 
 
 def test_no_secrets_in_capabilities_or_errors(temp_env, monkeypatch):
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-secret-do-not-print")
+    monkeypatch.setattr(config, "ELEVENLABS_API_KEY", "sk-secret-do-not-print")
     p = ElevenLabsProvider()
-    rendered = str(p.get_capabilities()) + str(p.generate("x", "English", {}))
+    rendered = str(p.get_capabilities())
+    try:
+        p.generate("x", "English", {})
+    except Exception as exc:
+        rendered += str(exc)
     assert "sk-secret-do-not-print" not in rendered

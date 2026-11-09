@@ -1,9 +1,10 @@
+"""Test fixtures: redirect all storage into a temporary directory."""
+
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "app"))
 
 import pytest
 
@@ -12,17 +13,19 @@ from app import config, db
 
 @pytest.fixture()
 def temp_env(tmp_path, monkeypatch):
-    """Redirect all storage into a temp dir and provide a fresh DB."""
+    """Fresh temp storage + clean provider env for each test.
+
+    Attributes are patched on the (shared) config module object so every
+    importer sees the temporary paths; reloading would break references.
+    """
     data_dir = tmp_path / "data"
-    monkeypatch.setenv("DATA_DIR", str(data_dir))
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-    monkeypatch.delenv("LOCAL_VOICE_MODEL_DIR", raising=False)
-    # Reload config so module constants point at the temp directory
-    import importlib
-    importlib.reload(config)
-    importlib.reload(db)
-    importlib.reload(sys.modules["app.storage"])
-    for sub in ("voices", "samples", "generated"):
-        (data_dir / sub).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "VOICES_DIR", data_dir / "voices")
+    monkeypatch.setattr(config, "SAMPLES_DIR", data_dir / "samples")
+    monkeypatch.setattr(config, "GENERATED_DIR", data_dir / "generated")
+    monkeypatch.setattr(config, "DB_PATH", data_dir / "test.db")
+    monkeypatch.setattr(config, "ELEVENLABS_API_KEY", "")
+    monkeypatch.setattr(config, "LOCAL_VOICE_MODEL_DIR", None)
+    config.ensure_directories()
+    db.init_db()
     yield data_dir
-    # reload back to defaults is unnecessary per test since each test reloads

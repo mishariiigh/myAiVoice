@@ -174,7 +174,7 @@ def list_voice_profiles() -> list:
 # --- Voice samples -------------------------------------------------------------
 
 def add_voice_sample(profile_id: str, original_filename: str, stored_filename: str,
-                     file_path: str, fmt: str, size_bytes: int,
+                     file_path: str, format: str, size_bytes: int,
                      duration_seconds: Optional[float] = None,
                      sample_rate: Optional[int] = None,
                      source: str = "upload") -> str:
@@ -184,7 +184,7 @@ def add_voice_sample(profile_id: str, original_filename: str, stored_filename: s
             "INSERT INTO voice_samples (id, profile_id, original_filename,"
             " stored_filename, file_path, format, size_bytes, duration_seconds,"
             " sample_rate, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, profile_id, original_filename, stored_filename, file_path, fmt,
+            (sid, profile_id, original_filename, stored_filename, file_path, format,
              size_bytes, duration_seconds, sample_rate, source, _utcnow()),
         )
     return sid
