@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# User data — stay local, never commit
+data/
+*.db
+*.sqlite3
+
+# Audio / models
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+models/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
