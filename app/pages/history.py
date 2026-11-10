@@ -25,6 +25,8 @@ def render() -> None:
                 "Language": r["language"],
                 "Provider": r["provider"],
                 "Voice profile": r["voice_profile_name"] or "—",
+                "Emotion": r["emotion"] or "—",
+                "Expression ref": r["expression_reference_name"] or "—",
                 "Status": r["status"],
                 "Created": r["created_at"][:19],
                 "Output file": r["audio_path"] or "—",
@@ -38,5 +40,9 @@ def render() -> None:
         ts = datetime.fromisoformat(r["created_at"]).strftime("%Y-%m-%d %H:%M")
         with st.expander(f"{ts} · {r['provider']} · {r['status']}"):
             st.write(r["script_text"])
+            if r["emotion"]:
+                st.caption(f"Emotion: {r['emotion']}")
+            if r["expression_reference_name"]:
+                st.caption(f"Expressive reference: {r['expression_reference_name']}")
             if r["error_message"]:
                 st.error(r["error_message"])
