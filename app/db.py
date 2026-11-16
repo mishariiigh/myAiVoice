@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from . import config
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 # Schema version 1 — the baseline tables that existed before any migration.
 # Every statement is CREATE TABLE/INDEX IF NOT EXISTS so re-running it on an
@@ -137,6 +137,29 @@ _V2_MIGRATIONS = [
     """,
 ]
 
+# Schema version 3 additions — maps a local voice profile to an ElevenLabs
+# voice ID so the cloud provider can generate speech using that voice.
+# The column is nullable: a profile without a mapping cannot be used for
+# generation, but it remains a valid local voice profile.
+_V3_MIGRATIONS = [
+    "ALTER TABLE voice_profiles ADD COLUMN elevenlabs_voice_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_voice_profiles_elevenlabs_id"
+    " ON voice_profiles(elevenlabs_voice_id)",
+]
+
+
+# Registry of every migration version, keyed by schema version number.
+# Values are the NAMES of the module-level migration lists (not the lists
+# themselves) so tests can monkeypatch e.g. `db._V2_MIGRATIONS` and have
+# init_db() pick up the patched list at call time. `init_db()` walks
+# range(current + 1, SCHEMA_VERSION + 1) and applies each version's
+# statements inside its own BEGIN IMMEDIATE transaction.
+_MIGRATIONS = {
+    2: "_V2_MIGRATIONS",
+    3: "_V3_MIGRATIONS",
+    4: "_V4_MIGRATIONS",
+}
+
 
 # Sentinel default for "field not provided" in update_* helpers. A bare None
 # would mean "set the column to NULL", so the absence of a change needs its own
@@ -222,13 +245,12 @@ def init_db(db_path: Optional[Path] = None) -> None:
     Transaction behavior:
     - The v1 baseline runs via `executescript()` (which manages its own
       transaction and commits on its own) — no `executescript()` is ever used
-      inside the v2 migration transaction.
-    - The v2 migration (and the schema-version recording that gates it) run
-      as explicit, individually-executed statements inside a
-      `BEGIN IMMEDIATE` transaction: it commits only after every statement,
-      including `_set_schema_version`, has succeeded, and rolls back
-      completely if any statement fails, so the schema version can never
-      advance past a partially-applied migration.
+      inside a migration transaction.
+    - Each migration version (v2, v3, …) runs as explicit, individually-
+      executed statements inside a `BEGIN IMMEDIATE` transaction: it commits
+      only after every statement, including `_set_schema_version`, has
+      succeeded, and rolls back completely if any statement fails, so the
+      schema version can never advance past a partially-applied migration.
     - `ALTER TABLE ... ADD COLUMN` statements are guarded by a column
       existence check so a database that was somehow left partially migrated
       (columns added but the version row missing) can never be re-ALTERed
@@ -239,26 +261,32 @@ def init_db(db_path: Optional[Path] = None) -> None:
         #    the tables already exist, so this preserves all existing data.
         conn.executescript(_V1_SCHEMA)
 
-        # 2. Apply v2 migrations only if the database has not recorded it yet,
-        #    as one explicit, all-or-nothing transaction.
+        # 2. Apply each pending migration version in order, as one explicit,
+        #    all-or-nothing transaction per version.
         current = _get_schema_version(conn)
         if current < SCHEMA_VERSION:
             if conn.in_transaction:
                 # Defensive: executescript() commits on its own, but never
                 # BEGIN with one transaction already open.
                 conn.commit()
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                for statement in _V2_MIGRATIONS:
-                    add_column = _add_column_sql(statement)
-                    if add_column and add_column[1] in _table_columns(conn, add_column[0]):
-                        continue  # already added — do not re-ALTER
-                    conn.execute(statement)
-                _set_schema_version(conn, SCHEMA_VERSION)
-            except Exception:
-                conn.rollback()
-                raise
-            conn.commit()
+            for version in range(current + 1, SCHEMA_VERSION + 1):
+                # Resolve the list dynamically so monkeypatched module
+                # attributes are honored (see _MIGRATIONS comment above).
+                statements = globals().get(_MIGRATIONS.get(version, ""), [])
+                if not statements:
+                    continue
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for statement in statements:
+                        add_column = _add_column_sql(statement)
+                        if add_column and add_column[1] in _table_columns(conn, add_column[0]):
+                            continue  # already added — do not re-ALTER
+                        conn.execute(statement)
+                    _set_schema_version(conn, version)
+                except Exception:
+                    conn.rollback()
+                    raise
+                conn.commit()
 
 
 @contextmanager
@@ -313,6 +341,23 @@ def delete_voice_profile(profile_id: str) -> None:
         conn.execute("DELETE FROM voice_profiles WHERE id = ?", (profile_id,))
 
 
+def update_voice_profile_elevenlabs_id(profile_id: str,
+                                         elevenlabs_voice_id: Optional[str]) -> None:
+    """Set or clear the ElevenLabs voice ID mapped to a local voice profile.
+
+    `elevenlabs_voice_id=None` clears the mapping. A non-None value must be a
+    non-empty ElevenLabs voice ID string.
+    """
+    if elevenlabs_voice_id is not None:
+        elevenlabs_voice_id = str(elevenlabs_voice_id).strip() or None
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE voice_profiles SET elevenlabs_voice_id = ?, updated_at = ?"
+            " WHERE id = ?",
+            (elevenlabs_voice_id, _utcnow(), profile_id),
+        )
+
+
 def get_voice_profile(profile_id: str) -> Optional[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
@@ -327,24 +372,37 @@ def list_voice_profiles() -> list:
         ).fetchall()
 
 
+# --- Sample transcripts ---------------------------------------------------------
+#
+# A voice-cloning reference is only usable when its exact transcript is known.
+# The transcript column lives on voice_samples so each recording carries its
+# own text. NULL means "not yet provided" — the engine refuses to clone from a
+# sample whose words it does not know, rather than inventing one.
+_V4_MIGRATIONS = [
+    "ALTER TABLE voice_samples ADD COLUMN transcript TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_samples_transcript ON voice_samples(transcript)",
+]
+
 # --- Voice samples -------------------------------------------------------------
+
 
 def add_voice_sample(profile_id: str, original_filename: str, stored_filename: str,
                       file_path: str, format: str, size_bytes: int,
                       duration_seconds: Optional[float] = None,
                       sample_rate: Optional[int] = None,
                       source: str = "upload",
-                      sample_kind: str = "identity") -> str:
+                      sample_kind: str = "identity",
+                      transcript: Optional[str] = None) -> str:
     sid = new_id()
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO voice_samples (id, profile_id, original_filename,"
             " stored_filename, file_path, format, size_bytes, duration_seconds,"
-            " sample_rate, source, sample_kind, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " sample_rate, source, sample_kind, transcript, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sid, profile_id, original_filename, stored_filename, file_path, format,
              size_bytes, duration_seconds, sample_rate, source, sample_kind,
-             _utcnow()),
+             transcript, _utcnow()),
         )
     return sid
 
@@ -362,6 +420,39 @@ def list_voice_samples(profile_id: str) -> list:
             "SELECT * FROM voice_samples WHERE profile_id = ? ORDER BY created_at DESC",
             (profile_id,),
         ).fetchall()
+
+
+def update_sample_transcript(sample_id: str, transcript: Optional[str]) -> None:
+    """Set or clear the exact transcript of a voice sample.
+
+    The transcript is what the cloning engine conditions on, so it must be
+    the user's own verified text — never auto-generated. Passing None clears
+    the transcript (and marks the sample unusable for cloning again).
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE voice_samples SET transcript = ? WHERE id = ?",
+            (transcript, sample_id),
+        )
+
+
+def get_usable_reference_sample(profile_id: str) -> Optional[sqlite3.Row]:
+    """Return the newest sample of a profile that is clone-ready.
+
+    A sample is usable when it has a non-empty transcript AND a valid stored
+    audio file. Used by the local engine to pick its reference clip.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM voice_samples WHERE profile_id = ?"
+            " ORDER BY created_at DESC",
+            (profile_id,),
+        ).fetchall()
+    for row in rows:
+        transcript = (row["transcript"] or "").strip()
+        if transcript and Path(row["file_path"]).is_file():
+            return row
+    return None
 
 
 def delete_voice_sample(sample_id: str) -> None:
@@ -447,6 +538,24 @@ def add_audio_file(path: str, fmt: str, size_bytes: int,
 def list_audio_files() -> list:
     with get_conn() as conn:
         return conn.execute("SELECT * FROM audio_files ORDER BY created_at DESC").fetchall()
+
+
+def delete_audio_file(audio_file_id: str) -> None:
+    """Remove an audio_files row only if nothing references it.
+
+    generations.audio_file_id is a plain column (no FK in v1), so a generation
+    may still point at the id. In that case the row is kept to avoid a dangling
+    reference — the caller decides whether the generation should also be
+    marked failed/updated first.
+    """
+    with get_conn() as conn:
+        used = conn.execute(
+            "SELECT 1 FROM generations WHERE audio_file_id = ? LIMIT 1",
+            (audio_file_id,),
+        ).fetchone()
+        if used:
+            return
+        conn.execute("DELETE FROM audio_files WHERE id = ?", (audio_file_id,))
 
 
 # --- Settings (key/value) ----------------------------------------------------------

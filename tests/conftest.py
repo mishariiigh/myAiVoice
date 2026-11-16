@@ -29,3 +29,15 @@ def temp_env(tmp_path, monkeypatch):
     config.ensure_directories()
     db.init_db()
     yield data_dir
+
+@pytest.fixture()
+def real_upload_source():
+    """Path to the user's real MP4 recording used as integration fixture.
+
+    Skipped cleanly when the file is not present (e.g. on other machines) so
+    the suite never fails for lack of a personal recording.
+    """
+    path = Path.home() / "Downloads" / "Recording 1.mp4"
+    if not path.is_file():
+        pytest.skip("Integration fixture 'Recording 1.mp4' not available")
+    return path

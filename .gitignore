@@ -25,3 +25,28 @@ models/
 .DS_Store
 .idea/
 .vscode/
+
+# Local development environments and dependencies
+.venv-local/
+.conda/
+node_modules/
+
+# Model weights and checkpoints
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# Generated audio and temporary files
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.webm
+*.mp4
+*.mov
+*.mkv
+*.tmp

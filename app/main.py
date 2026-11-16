@@ -2,8 +2,8 @@
 
 import streamlit as st
 
-from . import config, db
-from .theme import apply_theme
+from app import config, db
+from app.theme import apply_theme
 
 
 def ensure_ready() -> None:
@@ -29,7 +29,7 @@ def main() -> None:
     )
     st.sidebar.caption(f"v{config.APP_VERSION}")
 
-    from .pages import history, settings, studio, voice_library
+    from app.pages import history, settings, studio, voice_library
 
     if page == "Studio":
         studio.render()

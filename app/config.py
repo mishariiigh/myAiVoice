@@ -33,7 +33,10 @@ GENERATED_DIR = DATA_DIR / "generated"
 DB_PATH = DATA_DIR / _env("DATABASE_NAME", "mishari_voice_studio.db")
 
 MAX_UPLOAD_MB = int(_env("MAX_UPLOAD_MB", "25"))
-ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a"}
+MAX_GENERATED_MB = int(_env("MAX_GENERATED_MB", "50"))
+ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4", ".aac",
+                             ".flac", ".ogg", ".opus", ".webm", ".mov",
+                             ".mkv"}
 AUDIO_MIME_TYPES = {
     "audio/wav",
     "audio/x-wav",
@@ -47,6 +50,19 @@ AUDIO_MIME_TYPES = {
 
 SUPPORTED_LANGUAGES = ("English", "Arabic")
 
+# Emotion categories are delivery hints recorded as metadata with each
+# generation (see Studio page and the generations table).
+EMOTION_CATEGORIES = (
+    "Neutral",
+    "Happy",
+    "Sad",
+    "Angry",
+    "Excited",
+    "Calm",
+    "Whisper",
+)
+
+
 # --- Providers ---------------------------------------------------------------
 ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY")
 ELEVENLABS_BASE_URL = _env("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io")
@@ -57,3 +73,19 @@ def ensure_directories() -> None:
     """Create the storage tree if missing (idempotent, safe to call anytime)."""
     for d in (DATA_DIR, VOICES_DIR, SAMPLES_DIR, GENERATED_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+# --- Dynamic credential helpers -----------------------------------------------
+# The module-level constants above are captured at import time, which breaks
+# tests that patch os.environ after import. These helpers read the environment
+# on every call so they always reflect the current process state. They never
+# log or persist the credential.
+
+def get_elevenlabs_api_key() -> str:
+    """Return the ElevenLabs API key from the current environment, or ''."""
+    return _env("ELEVENLABS_API_KEY")
+
+
+def get_elevenlabs_base_url() -> str:
+    """Return the ElevenLabs base URL from the current environment."""
+    return _env("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io")

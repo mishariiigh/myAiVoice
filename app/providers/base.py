@@ -34,6 +34,39 @@ class NotImplementedYetError(ProviderError):
     """Generation is not implemented in this stage."""
 
 
+class ProviderAuthenticationError(ProviderError):
+    """The provider rejected the credentials (HTTP 401/403).
+
+    Message MUST NOT contain the API key — only a human-readable hint."""
+
+
+class ProviderRateLimitError(ProviderError):
+    """The provider throttled the request (HTTP 429).
+
+    `retry_after_seconds` carries the server-provided hint when present."""
+
+    def __init__(self, message: str, retry_after_seconds: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ProviderTimeoutError(ProviderError):
+    """The provider did not answer within the allowed time."""
+
+
+class ProviderResponseError(ProviderError):
+    """The provider answered, but the response is unusable
+    (unexpected status code, malformed body, empty audio, ...)."""
+
+
+class ProviderRequestError(ProviderError):
+    """The request itself was rejected (4xx other than auth/rate-limit)."""
+
+
+class ProviderVoiceMappingError(ProviderError):
+    """The local voice profile has no voice ID mapped for this provider."""
+
+
 class Provider:
     """Abstract interface every voice engine must implement."""
 
